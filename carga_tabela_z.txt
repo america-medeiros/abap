@@ -1,0 +1,126 @@
+*&---------------------------------------------------------------------*
+*& Report Z_CARGA_TESTE_AMERICA
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+REPORT z_carga_teste_america.
+
+* Declaração de tipos e variáveis
+TYPES: BEGIN OF ty_carga,
+         lifnr TYPE zmmt_tolerancia-lifnr,
+         netwr TYPE zmmt_tolerancia-netwr,
+         desc  TYPE string,
+       END OF ty_carga.
+
+DATA: it_carga TYPE TABLE OF ty_carga.
+DATA: it_raw TYPE  truxs_t_text_data.
+
+* Tela de seleção de arquivo
+PARAMETERS: p_file TYPE ibipparms-path.
+
+* Perform para a função que faz upload do arquivo
+  AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_file.
+    PERFORM upl_file.
+
+* performa para validação dos dados e carga na tabela
+START-OF-SELECTION.
+Perform carga_file.
+
+  IF p_file IS NOT INITIAL.
+    CALL FUNCTION 'TEXT_CONVERT_XLS_TO_SAP'
+      EXPORTING
+        i_line_header        = 'X'
+        i_tab_raw_data       = it_raw
+        i_filename           = p_file
+      TABLES
+        i_tab_converted_data = it_carga
+      EXCEPTIONS
+        conversion_failed    = 1
+        OTHERS               = 2.
+    IF sy-subrc <> 0.
+      MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+              WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+    ELSE.
+      DATA: ls_carga TYPE ty_carga,
+            wa_carga TYPE zmmt_tolerancia.
+
+      LOOP AT it_carga INTO ls_carga.
+
+        DATA(lv_tabix) = sy-tabix.
+
+        UNPACK ls_carga-lifnr to ls_carga-lifnr.
+        SELECT SINGLE * FROM lfa1 INTO @DATA(wa1_carga) WHERE lifnr = @ls_carga-lifnr.
+
+        IF sy-subrc <> 0.
+          " Fornecedor não existe na tabela LFA1 - tratar erro
+          ls_carga-desc = 'Fornecedor não encontrado'.
+
+        ELSE.
+          MOVE-CORRESPONDING ls_carga TO wa_carga.
+          " Fornecedor existe na tabela LFA1 - realizar carga na ZMMT_TOLERANCIA
+          ls_carga-desc = 'Dados inseridos'.
+          wa_carga-utime = sy-uzeit.
+          wa_carga-udate = sy-datum.
+          wa_carga-unameu = sy-uname.
+
+          " Inserir dados na tabela ZMMT_TOLERANCIA
+          insert into zmmt_tolerancia values wa_carga.
+
+        ENDIF.
+
+        MODIFY it_carga FROM ls_carga INDEX lv_tabix.
+
+      ENDLOOP.
+
+    ENDIF.
+  ELSE.
+    " Nenhum arquivo selecionado - tratar erro
+    MESSAGE 'Nenhum arquivo selecionado para upload' TYPE 'I'.
+  ENDIF.
+
+* ALV para apresentar sucesso e erros
+START-OF-SELECTION.
+  IF it_carga IS NOT INITIAL.
+    DATA: lo_alv TYPE REF TO cl_salv_table.
+    TRY.
+        cl_salv_table=>factory(
+          IMPORTING
+            r_salv_table = lo_alv
+          CHANGING
+            t_table      = it_carga ).
+      CATCH cx_salv_msg .
+    ENDTRY.
+
+    TRY.
+      DATA(lo_column) = lo_alv->get_columns( )->get_column('DESC').
+      lo_column->set_short_text( 'Status' ).
+      lo_column->set_medium_text('Status').
+      lo_alv->display( ).
+    CATCH cx_salv_not_found.
+  ENDTRY.
+
+  ELSE.
+    WRITE: / 'Nenhum dado para exibir no ALV'.
+  ENDIF.
+*&---------------------------------------------------------------------*
+*&      Form  UPL_FILE
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM upl_file .
+
+  CALL FUNCTION 'F4_FILENAME'
+    IMPORTING
+      file_name    = p_file
+    EXCEPTIONS
+      no_selection = 1
+      OTHERS       = 2.
+  IF sy-subrc <> 0.
+    MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+            WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+  ENDIF.
+
+ENDFORM.
